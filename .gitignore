@@ -1,0 +1,22 @@
+**/node_modules/
+**/bin/
+**/obj/
+**/dist/
+**/.vs/
+**/.idea/
+.env
+.env.*
+!.env.example
+**/appsettings.Development.json
+**/appsettings.*.Development.json
+*.user
+*.suo
+
+/# Root-level package files are not part of the frontend
+/package.json
+/package-lock.json
+
+# Keep local application settings out of Git
+**/appsettings.json
+**/appsettings.*.json
+!**/appsettings.example.json
