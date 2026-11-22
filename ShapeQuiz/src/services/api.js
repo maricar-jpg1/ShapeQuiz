@@ -1,5 +1,5 @@
 
-const API_URL = "http://localhost:5286/api";
+const API_URL = "https://shapequiz-api.onrender.com/api";
 
 async function request(endpoint, options = {}) {
   let response;
@@ -12,9 +12,9 @@ async function request(endpoint, options = {}) {
         ...options.headers
       }
     });
-  } catch {
+  } catch (error) {
     throw new Error(
-      "Cannot connect to ShapeQuiz API. Make sure the backend is running."
+      "Unable to connect to ShapeQuiz server. Please check your internet connection or try again."
     );
   }
 
@@ -22,7 +22,9 @@ async function request(endpoint, options = {}) {
 
   if (!response.ok) {
     throw new Error(
-      data.message || `Request failed with status ${response.status}.`
+      data.message ||
+      data.detail ||
+      `Server error: ${response.status} ${response.statusText}`
     );
   }
 
@@ -30,29 +32,34 @@ async function request(endpoint, options = {}) {
 }
 
 export const api = {
+  // Teacher: Create a quiz
   createQuiz: (quiz) =>
     request("/quizzes", {
       method: "POST",
       body: JSON.stringify(quiz)
     }),
 
+  // Student: Join a quiz
   joinQuiz: (student) =>
     request("/student/join", {
       method: "POST",
       body: JSON.stringify(student)
     }),
 
+  // Student: Submit an answer
   submitAnswer: (answer) =>
     request("/student/answer", {
       method: "POST",
       body: JSON.stringify(answer)
     }),
 
+  // Student: Finish the quiz
   finishQuiz: (submissionId) =>
     request(`/student/finish/${submissionId}`, {
       method: "POST"
     }),
 
+  // Get quiz leaderboard
   getLeaderboard: (accessCode) =>
     request(`/student/leaderboard/${encodeURIComponent(accessCode)}`)
 };

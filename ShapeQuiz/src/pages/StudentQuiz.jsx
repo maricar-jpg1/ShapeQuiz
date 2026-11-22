@@ -1,5 +1,5 @@
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ChevronLeft,
@@ -12,8 +12,10 @@ import {
   Trophy,
   Shapes,
   XCircle,
-  Medal
+  Medal,
+  LoaderCircle
 } from "lucide-react";
+import { api } from "../services/api";
 
 const shapes = [
   { id: "A", symbol: "●", style: "circle" },
@@ -22,150 +24,176 @@ const shapes = [
   { id: "D", symbol: "◆", style: "diamond" }
 ];
 
+function normalizeQuestion(question) {
+  const options = Array.isArray(question.options)
+    ? question.options.map((option) =>
+        typeof option === "string" ? option : option.label
+      )
+    : [
+        question.optionA,
+        question.optionB,
+        question.optionC,
+        question.optionD
+      ];
+
+  return {
+    id: question.id || question.questionId,
+    question: question.question || question.questionText,
+    options,
+    // Never receive or display the correct answer before submission.
+  };
+}
+
+function getList(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.leaderboard)) return data.leaderboard;
+  if (Array.isArray(data?.results)) return data.results;
+  if (Array.isArray(data?.submissions)) return data.submissions;
+  return [];
+}
+
 function StudentQuiz() {
   const navigate = useNavigate();
 
   const [quiz, setQuiz] = useState(null);
   const [studentName, setStudentName] = useState("");
+  const [submissionId, setSubmissionId] = useState("");
+  const [accessCode, setAccessCode] = useState("");
   const [answers, setAnswers] = useState({});
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [submitted, setSubmitted] = useState(false);
-  const [submittedResultId, setSubmittedResultId] = useState(null);
+  const [finalResult, setFinalResult] = useState(null);
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [answering, setAnswering] = useState(false);
+  const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState("");
 
-  // LOAD QUIZ
+  // LOAD QUIZ FROM STUDENT LOGIN
   useEffect(() => {
-    const savedQuiz = localStorage.getItem("shapeQuiz");
-    const name = sessionStorage.getItem("studentName");
-    const code = sessionStorage.getItem("quizCode");
-
-    if (!name || !code) {
-      navigate("/student/login");
-      return;
-    }
-
-    if (!savedQuiz) {
-      setError("No quiz found. Please ask your teacher to create a quiz.");
-      return;
-    }
-
     try {
-      const parsedQuiz = JSON.parse(savedQuiz);
+      const savedQuiz = sessionStorage.getItem("studentQuiz");
+      const name = sessionStorage.getItem("studentName");
+      const code = sessionStorage.getItem("quizCode");
+      const savedSubmissionId = sessionStorage.getItem("submissionId");
 
-      if (
-        !parsedQuiz.code ||
-        parsedQuiz.code.toUpperCase() !== code.toUpperCase()
-      ) {
-        setError("Invalid quiz access code. Please check with your teacher.");
+      if (!name || !code || !savedSubmissionId || !savedQuiz) {
+        navigate("/student/login");
         return;
       }
 
-      if (
-        !Array.isArray(parsedQuiz.questions) ||
-        parsedQuiz.questions.length !== 10
-      ) {
-        setError("The quiz must contain exactly 10 questions.");
+      const parsed = JSON.parse(savedQuiz);
+      const quizData = parsed.quiz || parsed;
+
+      const questions = (
+        quizData.questions ||
+        parsed.questions ||
+        []
+      ).map(normalizeQuestion);
+
+      if (questions.length !== 10) {
+        setError("This quiz does not contain exactly 10 questions.");
+        setLoading(false);
         return;
       }
 
-      const validQuestions = parsedQuiz.questions.every(
+      const validQuestions = questions.every(
         (question) =>
           question.id &&
           question.question &&
           Array.isArray(question.options) &&
           question.options.length === 4 &&
-          ["A", "B", "C", "D"].includes(question.correctAnswer)
+          question.options.every(Boolean)
       );
 
       if (!validQuestions) {
         setError("Some quiz questions are incomplete or invalid.");
+        setLoading(false);
         return;
       }
 
-      setQuiz(parsedQuiz);
+      setQuiz({
+        title:
+          quizData.title ||
+          quizData.quizTitle ||
+          parsed.title ||
+          "Classroom Quiz",
+        questions
+      });
+
       setStudentName(name);
+      setAccessCode(code);
+      setSubmissionId(savedSubmissionId);
     } catch {
-      setError("Unable to load the quiz. Please try again.");
+      setError("Unable to load your quiz. Please join again.");
+    } finally {
+      setLoading(false);
     }
   }, [navigate]);
 
-  // SELECT ANSWER
-  const selectAnswer = (questionId, answer) => {
-    if (submitted || answers[questionId]) return;
+  // SUBMIT ONE ANSWER TO THE BACKEND
+  const selectAnswer = async (questionId, selectedOption) => {
+    if (answers[questionId] || answering || submitted) return;
 
-    setAnswers((previous) => ({
-      ...previous,
-      [questionId]: answer
-    }));
+    setAnswering(true);
+    setError("");
+
+    try {
+      const result = await api.submitAnswer({
+        submissionId,
+        questionId,
+        selectedOption
+      });
+
+      setAnswers((previous) => ({
+        ...previous,
+        [questionId]: {
+          selectedOption,
+          isCorrect: Boolean(result.isCorrect),
+          correctOption: result.correctOption || null
+        }
+      }));
+    } catch (err) {
+      setError(err.message || "Unable to submit your answer.");
+    } finally {
+      setAnswering(false);
+    }
   };
 
-  // CALCULATE SCORE
-  const calculateScore = () => {
-    if (!quiz) return 0;
+  // FINISH QUIZ AND GET THE SERVER SCORE
+  const handleSubmit = async () => {
+    if (!quiz || submitted || finishing) return;
 
-    return quiz.questions.filter(
-      (question) =>
-        answers[question.id] === question.correctAnswer
-    ).length;
-  };
-
-  // SAVE STUDENT RESULT
-  const saveStudentResult = (score) => {
-    const storageKey = `shapeQuizResults_${quiz.code}`;
-
-    const previousResults = JSON.parse(
-      localStorage.getItem(storageKey) || "[]"
-    );
-
-    const result = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      studentName,
-      score,
-      totalQuestions: 10,
-      answers: { ...answers },
-      submittedAt: new Date().toISOString()
-    };
-
-    const updatedResults = [...previousResults, result];
-
-    localStorage.setItem(
-      storageKey,
-      JSON.stringify(updatedResults)
-    );
-
-    return result.id;
-  };
-
-  // SUBMIT QUIZ
-  const handleSubmit = () => {
-    if (!quiz || submitted) return;
-
-    const unanswered = quiz.questions.filter(
-      (question) => !answers[question.id]
-    );
-
-    if (unanswered.length > 0) {
-      setError(
-        `You still have ${unanswered.length} unanswered question(s).`
-      );
+    if (Object.keys(answers).length !== quiz.questions.length) {
+      setError("Please answer all 10 questions first.");
       return;
     }
 
-    try {
-      const score = calculateScore();
-      const resultId = saveStudentResult(score);
+    setFinishing(true);
+    setError("");
 
-      setSubmittedResultId(resultId);
-      setError("");
+    try {
+      const result = await api.finishQuiz(submissionId);
+
+      setFinalResult(result);
       setSubmitted(true);
-    } catch {
-      setError("Unable to save your quiz result. Please try again.");
+
+      // Load shared leaderboard from the backend
+      try {
+        const leaderboardData = await api.getLeaderboard(accessCode);
+        setLeaderboard(getList(leaderboardData));
+      } catch {
+        setLeaderboard([]);
+      }
+    } catch (err) {
+      setError(err.message || "Unable to finish your quiz.");
+    } finally {
+      setFinishing(false);
     }
   };
 
-  // NAVIGATION
   const handleNext = () => {
-    if (currentQuestion < 9) {
+    if (currentQuestion < quiz.questions.length - 1) {
       setCurrentQuestion((previous) => previous + 1);
       setError("");
     }
@@ -178,14 +206,24 @@ function StudentQuiz() {
     }
   };
 
-  // LOGOUT
   const handleLogout = () => {
     sessionStorage.removeItem("studentName");
     sessionStorage.removeItem("quizCode");
+    sessionStorage.removeItem("submissionId");
+    sessionStorage.removeItem("studentQuiz");
     navigate("/");
   };
 
-  // LOADING / ERROR
+  if (loading) {
+    return (
+      <div className="student-quiz-page">
+        <div className="student-loading">
+          Loading your classroom quiz...
+        </div>
+      </div>
+    );
+  }
+
   if (error && !quiz) {
     return (
       <div className="student-quiz-page">
@@ -193,7 +231,6 @@ function StudentQuiz() {
           <Shapes size={45} />
           <h2>Unable to Join Quiz</h2>
           <p>{error}</p>
-
           <button
             onClick={() => navigate("/student/login")}
             className="student-main-button"
@@ -205,52 +242,44 @@ function StudentQuiz() {
     );
   }
 
-  if (!quiz) {
-    return (
-      <div className="student-quiz-page">
-        <div className="student-loading">
-          Loading your classroom quiz...
-        </div>
-      </div>
-    );
-  }
+  if (!quiz) return null;
 
   const question = quiz.questions[currentQuestion];
   const answeredCount = Object.keys(answers).length;
-  const progress = (answeredCount / 10) * 100;
+  const progress = (answeredCount / quiz.questions.length) * 100;
+  const currentAnswer = answers[question.id];
+  const selectedAnswer = currentAnswer?.selectedOption;
 
-  const selectedAnswer = answers[question.id];
-
-  // RESULT SCREEN
+  // FINAL RESULT
   if (submitted) {
-    const score = calculateScore();
+    const score =
+      finalResult?.score ??
+      finalResult?.totalCorrect ??
+      finalResult?.correctAnswers ??
+      0;
 
-    const storageKey = `shapeQuizResults_${quiz.code}`;
+    const totalQuestions =
+      finalResult?.totalQuestions ?? quiz.questions.length;
 
-    const results = JSON.parse(
-      localStorage.getItem(storageKey) || "[]"
-    );
-
-    const rankedResults = [...results].sort(
-      (a, b) =>
-        b.score - a.score ||
-        new Date(a.submittedAt) - new Date(b.submittedAt)
+    const myIndex = leaderboard.findIndex(
+      (item) =>
+        item.submissionId === submissionId ||
+        item.id === submissionId
     );
 
     const myRank =
-      rankedResults.findIndex(
-        (result) => result.id === submittedResultId
-      ) + 1;
+      myIndex >= 0 ? myIndex + 1 : null;
 
     return (
       <div className="student-quiz-page">
-
         <header className="student-quiz-header">
           <div className="student-brand">
             <div className="student-brand-icon">
               <Shapes size={24} />
             </div>
-            <h2>Shape<span>Quiz</span></h2>
+            <h2>
+              Shape<span>Quiz</span>
+            </h2>
           </div>
 
           <div className="student-header-profile">
@@ -265,10 +294,7 @@ function StudentQuiz() {
         </header>
 
         <main className="student-quiz-container">
-
-          {/* FINAL SCORE */}
           <section className="result-card">
-
             <div className="result-trophy">
               <Trophy size={55} />
             </div>
@@ -278,11 +304,10 @@ function StudentQuiz() {
             </span>
 
             <h1>Great job, {studentName}!</h1>
-
             <p>Your answers have been submitted.</p>
 
             <div className="score-circle">
-              <strong>{score}/10</strong>
+              <strong>{score}/{totalQuestions}</strong>
               <span>Your Score</span>
             </div>
 
@@ -293,12 +318,12 @@ function StudentQuiz() {
               </div>
 
               <div>
-                <strong>{10 - score}</strong>
+                <strong>{totalQuestions - score}</strong>
                 <span>Incorrect</span>
               </div>
 
               <div>
-                <strong>10</strong>
+                <strong>{totalQuestions}</strong>
                 <span>Total</span>
               </div>
             </div>
@@ -313,16 +338,17 @@ function StudentQuiz() {
             <div className="student-rank-highlight">
               <Trophy size={28} />
               <div>
-                <strong>#{myRank}</strong>
-                <span>Your current position</span>
+                <strong>{myRank ? `#${myRank}` : "Submitted"}</strong>
+                <span>
+                  {myRank
+                    ? "Your current position"
+                    : "Your result is saved"}
+                </span>
               </div>
             </div>
-
           </section>
 
-          {/* LEADERBOARD */}
           <section className="student-question-card">
-
             <div className="leaderboard-heading">
               <Medal size={27} />
               <div>
@@ -332,90 +358,88 @@ function StudentQuiz() {
             </div>
 
             <div className="leaderboard-table">
-
               <div className="leaderboard-row leaderboard-header">
                 <span>RANK</span>
                 <span>STUDENT NAME</span>
                 <span>SCORE</span>
               </div>
 
-              {rankedResults.map((result, index) => (
+              {leaderboard.map((item, index) => {
+                const name =
+                  item.studentName || item.name || "Student";
+                const itemScore =
+                  item.score ?? item.totalScore ?? 0;
+                const itemId =
+                  item.submissionId || item.id;
 
-                <div
-                  className={`leaderboard-row ${
-                    result.id === submittedResultId
-                      ? "my-ranking"
-                      : ""
-                  }`}
-                  key={result.id}
-                >
+                return (
+                  <div
+                    className={`leaderboard-row ${
+                      itemId === submissionId ? "my-ranking" : ""
+                    }`}
+                    key={itemId || `${name}-${index}`}
+                  >
+                    <strong>
+                      {index === 0
+                        ? "🥇"
+                        : index === 1
+                          ? "🥈"
+                          : index === 2
+                            ? "🥉"
+                            : `#${index + 1}`}
+                    </strong>
 
-                  <strong>
-                    {index === 0
-                      ? "🥇"
-                      : index === 1
-                      ? "🥈"
-                      : index === 2
-                      ? "🥉"
-                      : `#${index + 1}`}
-                  </strong>
+                    <span>{name}</span>
+                    <strong>{itemScore}/10</strong>
+                  </div>
+                );
+              })}
 
-                  <span>{result.studentName}</span>
-
-                  <strong>
-                    {result.score}/10
-                  </strong>
-
-                </div>
-              ))}
-
-              {rankedResults.length === 0 && (
-                <p>No student results yet.</p>
+              {leaderboard.length === 0 && (
+                <p>
+                  Leaderboard could not be loaded. Your result
+                  has still been submitted.
+                </p>
               )}
-
             </div>
 
             <p className="leaderboard-note">
               Higher scores rank first. Earlier submissions
               rank higher when scores are tied.
             </p>
-
           </section>
 
-          {/* ANSWER REVIEW */}
           <section className="student-question-card">
-
             <div className="leaderboard-heading">
               <ClipboardList size={25} />
               <div>
                 <h2>Answer Review</h2>
-                <p>Review all your answers.</p>
+                <p>Review your submitted answers.</p>
               </div>
             </div>
 
             {quiz.questions.map((q, index) => {
-              const isCorrect =
-                answers[q.id] === q.correctAnswer;
+              const answer = answers[q.id];
+              const correctOption = answer?.correctOption;
+              const isCorrect = answer?.isCorrect;
 
-              const correctIndex =
-                ["A", "B", "C", "D"].indexOf(q.correctAnswer);
+              const selectedIndex = ["A", "B", "C", "D"].indexOf(
+                answer?.selectedOption
+              );
 
-              const studentIndex =
-                ["A", "B", "C", "D"].indexOf(answers[q.id]);
+              const correctIndex = ["A", "B", "C", "D"].indexOf(
+                correctOption
+              );
 
               return (
                 <div
                   className={`answer-review-item ${
-                    isCorrect
-                      ? "review-correct"
-                      : "review-incorrect"
+                    isCorrect ? "review-correct" : "review-incorrect"
                   }`}
                   key={q.id}
                 >
-
                   <div className="review-question-title">
                     <strong>Question {index + 1}</strong>
-
                     <span>
                       {isCorrect ? "✓ Correct" : "✗ Incorrect"}
                     </span>
@@ -426,21 +450,22 @@ function StudentQuiz() {
                   <div className="review-answer-line">
                     Your answer:{" "}
                     <strong>
-                      {answers[q.id]}. {q.options[studentIndex]}
+                      {answer?.selectedOption}.{" "}
+                      {q.options[selectedIndex]}
                     </strong>
                   </div>
 
-                  <div className="review-answer-line">
-                    Correct answer:{" "}
-                    <strong>
-                      {q.correctAnswer}. {q.options[correctIndex]}
-                    </strong>
-                  </div>
-
+                  {correctOption && (
+                    <div className="review-answer-line">
+                      Correct answer:{" "}
+                      <strong>
+                        {correctOption}. {q.options[correctIndex]}
+                      </strong>
+                    </div>
+                  )}
                 </div>
               );
             })}
-
           </section>
 
           <button
@@ -450,7 +475,6 @@ function StudentQuiz() {
             <LogOut size={18} />
             Finish
           </button>
-
         </main>
       </div>
     );
@@ -459,35 +483,29 @@ function StudentQuiz() {
   // ACTIVE QUIZ SCREEN
   return (
     <div className="student-quiz-page">
-
-      {/* HEADER */}
       <header className="student-quiz-header">
-
         <div className="student-brand">
           <div className="student-brand-icon">
             <Shapes size={24} />
           </div>
-          <h2>Shape<span>Quiz</span></h2>
+          <h2>
+            Shape<span>Quiz</span>
+          </h2>
         </div>
 
         <div className="student-header-profile">
           <div className="student-avatar">
             {studentName.charAt(0).toUpperCase()}
           </div>
-
           <div>
             <strong>{studentName}</strong>
             <small>Student</small>
           </div>
         </div>
-
       </header>
 
       <main className="student-quiz-container">
-
-        {/* QUIZ INFORMATION */}
         <section className="student-quiz-info">
-
           <span className="student-eyebrow">
             CLASSROOM QUIZ
           </span>
@@ -495,29 +513,23 @@ function StudentQuiz() {
           <h1>{quiz.title}</h1>
 
           <p>
-            Answer all 10 questions. Choose one answer
-            for each question.
+            Answer all 10 questions. Choose one answer for each
+            question.
           </p>
 
           <div className="student-quiz-meta">
-
             <span>
               <ClipboardList size={16} />
               10 Questions
             </span>
-
             <span>
               <Clock size={16} />
               Multiple Choice
             </span>
-
           </div>
-
         </section>
 
-        {/* PROGRESS */}
         <section className="student-progress-card">
-
           <div className="progress-heading">
             <strong>Your Progress</strong>
             <span>{answeredCount} of 10 answered</span>
@@ -531,7 +543,6 @@ function StudentQuiz() {
           </div>
 
           <div className="question-navigation">
-
             {quiz.questions.map((q, index) => (
               <button
                 key={q.id}
@@ -542,31 +553,20 @@ function StudentQuiz() {
                 }}
                 className={`question-dot ${
                   currentQuestion === index ? "active" : ""
-                } ${
-                  answers[q.id] ? "answered" : ""
-                }`}
+                } ${answers[q.id] ? "answered" : ""}`}
               >
                 {index + 1}
               </button>
             ))}
-
           </div>
-
         </section>
 
-        {/* QUESTION CARD */}
         <section className="student-question-card">
-
           <div className="student-question-heading">
-
             <span className="question-badge">
               QUESTION {currentQuestion + 1} OF 10
             </span>
-
-            <span className="question-points">
-              1 POINT
-            </span>
-
+            <span className="question-points">1 POINT</span>
           </div>
 
           <h2>{question.question}</h2>
@@ -575,14 +575,13 @@ function StudentQuiz() {
             Select your answer below.
           </p>
 
-          {/* ANSWER CHOICES */}
           <div className="student-answer-grid">
-
             {shapes.map((shape, index) => {
-
               const isSelected = selectedAnswer === shape.id;
-              const isCorrect = question.correctAnswer === shape.id;
-              const hasAnswered = Boolean(selectedAnswer);
+              const hasAnswered = Boolean(currentAnswer);
+              const isCorrect =
+                hasAnswered &&
+                currentAnswer.correctOption === shape.id;
 
               let choiceClass = "";
 
@@ -596,13 +595,12 @@ function StudentQuiz() {
                 <button
                   key={shape.id}
                   type="button"
-                  disabled={hasAnswered}
+                  disabled={hasAnswered || answering}
                   className={`student-answer-card ${shape.style} ${
                     isSelected ? "selected" : ""
                   } ${choiceClass}`}
                   onClick={() => selectAnswer(question.id, shape.id)}
                 >
-
                   <span className="student-answer-symbol">
                     {shape.symbol}
                   </span>
@@ -611,9 +609,7 @@ function StudentQuiz() {
                     OPTION {shape.id}
                   </span>
 
-                  <strong>
-                    {question.options[index]}
-                  </strong>
+                  <strong>{question.options[index]}</strong>
 
                   {hasAnswered && isCorrect && (
                     <span className="answer-check">
@@ -626,28 +622,29 @@ function StudentQuiz() {
                       <XCircle size={21} />
                     </span>
                   )}
-
                 </button>
               );
             })}
-
           </div>
 
-          {/* IMMEDIATE FEEDBACK */}
-          {selectedAnswer && (
+          {answering && (
+            <div className="student-form-error">
+              <LoaderCircle size={18} />
+              Submitting your answer...
+            </div>
+          )}
 
+          {currentAnswer && (
             <div
               className={`instant-feedback ${
-                selectedAnswer === question.correctAnswer
+                currentAnswer.isCorrect
                   ? "feedback-correct"
                   : "feedback-incorrect"
               }`}
             >
-
-              {selectedAnswer === question.correctAnswer ? (
+              {currentAnswer.isCorrect ? (
                 <>
                   <CheckCircle2 size={27} />
-
                   <div>
                     <strong>Correct Answer! 🎉</strong>
                     <p>Excellent! You earned 1 point.</p>
@@ -656,25 +653,26 @@ function StudentQuiz() {
               ) : (
                 <>
                   <XCircle size={27} />
-
                   <div>
                     <strong>Not Quite! Keep Learning.</strong>
-
-                    <p>
-                      The correct answer is:{" "}
-                      <strong>
-                        {question.correctAnswer}.{" "}
-                        {question.options[
-                          ["A", "B", "C", "D"].indexOf(
-                            question.correctAnswer
-                          )
-                        ]}
-                      </strong>
-                    </p>
+                    {currentAnswer.correctOption && (
+                      <p>
+                        The correct answer is:{" "}
+                        <strong>
+                          {currentAnswer.correctOption}.{" "}
+                          {
+                            question.options[
+                              ["A", "B", "C", "D"].indexOf(
+                                currentAnswer.correctOption
+                              )
+                            ]
+                          }
+                        </strong>
+                      </p>
+                    )}
                   </div>
                 </>
               )}
-
             </div>
           )}
 
@@ -684,53 +682,58 @@ function StudentQuiz() {
             </div>
           )}
 
-          {/* NAVIGATION */}
           <div className="student-question-actions">
-
             <button
               type="button"
               className="student-previous-button"
               onClick={handlePrevious}
-              disabled={currentQuestion === 0}
+              disabled={currentQuestion === 0 || answering}
             >
               <ChevronLeft size={19} />
               Previous
             </button>
 
             {currentQuestion < 9 ? (
-
               <button
                 type="button"
                 className="student-next-button"
                 onClick={handleNext}
-                disabled={!selectedAnswer}
+                disabled={!selectedAnswer || answering}
               >
                 Next Question
                 <ChevronRight size={19} />
               </button>
-
             ) : (
-
               <button
                 type="button"
                 className="student-submit-button"
                 onClick={handleSubmit}
-                disabled={!selectedAnswer || answeredCount !== 10}
+                disabled={
+                  !selectedAnswer ||
+                  answeredCount !== 10 ||
+                  answering ||
+                  finishing
+                }
               >
-                <Send size={18} />
-                Submit Quiz
+                {finishing ? (
+                  <>
+                    <LoaderCircle size={18} />
+                    Finishing...
+                  </>
+                ) : (
+                  <>
+                    <Send size={18} />
+                    Submit Quiz
+                  </>
+                )}
               </button>
-
             )}
-
           </div>
-
         </section>
 
         <p className="student-footer">
           ✦ ShapeQuiz · Do your best!
         </p>
-
       </main>
     </div>
   );
