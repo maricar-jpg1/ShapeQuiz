@@ -75,7 +75,10 @@ app.MapGet("/api/health/database", async (ShapeQuizDbContext db) =>
         bool connected = await db.Database.CanConnectAsync();
 
         return connected
-            ? Results.Ok(new { status = "Database connected successfully" })
+            ? Results.Ok(new
+            {
+                status = "Database connected successfully"
+            })
             : Results.Problem("Could not connect to the database.");
     }
     catch
@@ -129,7 +132,7 @@ app.MapPost("/api/quizzes", async (
         });
     }
 
-    // Validate all questions.
+    // VALIDATE QUESTIONS
 
     for (int i = 0; i < request.Questions.Count; i++)
     {
@@ -192,7 +195,7 @@ app.MapPost("/api/quizzes", async (
         }
     }
 
-    // Generate unique access code.
+    // GENERATE UNIQUE ACCESS CODE
 
     const string characters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -210,7 +213,7 @@ app.MapPost("/api/quizzes", async (
     }
     while (await db.Quizzes.AnyAsync(q => q.AccessCode == accessCode));
 
-    // Create quiz.
+    // CREATE QUIZ
 
     var quiz = new Quiz
     {
@@ -259,6 +262,7 @@ app.MapPost("/api/quizzes", async (
 
 // ==========================================
 // GET QUIZ FOR EDITING
+// ALLOW STUDENTS WHO HAVE ALREADY JOINED
 // ==========================================
 
 app.MapGet("/api/quizzes/{accessCode}/edit", async (
@@ -276,17 +280,6 @@ app.MapGet("/api/quizzes/{accessCode}/edit", async (
         return Results.NotFound(new
         {
             message = "Quiz not found."
-        });
-    }
-
-    bool hasStudents = await db.Submissions
-        .AnyAsync(s => s.QuizId == quiz.Id);
-
-    if (hasStudents)
-    {
-        return Results.BadRequest(new
-        {
-            message = "This quiz cannot be edited because students have already joined."
         });
     }
 
@@ -314,6 +307,8 @@ app.MapGet("/api/quizzes/{accessCode}/edit", async (
 
 // ==========================================
 // UPDATE EXISTING QUIZ
+// ALLOW EDITING AFTER STUDENTS JOIN
+// RECALCULATE EXISTING STUDENT SCORES
 // ==========================================
 
 app.MapPut("/api/quizzes/{accessCode}", async (
@@ -321,7 +316,10 @@ app.MapPut("/api/quizzes/{accessCode}", async (
     CreateQuizRequest? request,
     ShapeQuizDbContext db) =>
 {
-    if (request == null || request.Questions == null ||
+    // VALIDATE REQUEST
+
+    if (request == null ||
+        request.Questions == null ||
         request.Questions.Count != 10)
     {
         return Results.BadRequest(new
@@ -341,7 +339,7 @@ app.MapPut("/api/quizzes/{accessCode}", async (
         });
     }
 
-    // Validate before updating.
+    // VALIDATE ALL QUESTIONS BEFORE UPDATING
 
     for (int i = 0; i < request.Questions.Count; i++)
     {
@@ -404,7 +402,7 @@ app.MapPut("/api/quizzes/{accessCode}", async (
         }
     }
 
-    // Start transaction.
+    // START DATABASE TRANSACTION
 
     await using var transaction =
         await db.Database.BeginTransactionAsync();
@@ -421,19 +419,6 @@ app.MapPut("/api/quizzes/{accessCode}", async (
         });
     }
 
-    // Do not allow edits after students join.
-
-    bool hasStudents = await db.Submissions
-        .AnyAsync(s => s.QuizId == quiz.Id);
-
-    if (hasStudents)
-    {
-        return Results.BadRequest(new
-        {
-            message = "Editing is disabled because students have already joined this quiz."
-        });
-    }
-
     if (quiz.Questions.Count != 10)
     {
         return Results.BadRequest(new
@@ -442,7 +427,7 @@ app.MapPut("/api/quizzes/{accessCode}", async (
         });
     }
 
-    // Update existing records.
+    // UPDATE EXISTING QUIZ
 
     quiz.Title = title;
 
@@ -460,19 +445,62 @@ app.MapPut("/api/quizzes/{accessCode}", async (
         existing.OptionB = item.OptionB.Trim();
         existing.OptionC = item.OptionC.Trim();
         existing.OptionD = item.OptionD.Trim();
+
         existing.CorrectOption =
             item.CorrectOption.Trim().ToUpperInvariant();
     }
 
+    // ======================================
+    // RECALCULATE EXISTING STUDENT ANSWERS
+    // ======================================
+
+    var submissions = await db.Submissions
+        .Where(s => s.QuizId == quiz.Id)
+        .Include(s => s.Answers)
+        .ToListAsync();
+
+    var questionAnswerKey = existingQuestions
+        .ToDictionary(
+            q => q.Id,
+            q => q.CorrectOption
+        );
+
+    foreach (var submission in submissions)
+    {
+        foreach (var answer in submission.Answers)
+        {
+            if (questionAnswerKey.TryGetValue(
+                answer.QuestionId,
+                out var correctOption))
+            {
+                answer.IsCorrect = string.Equals(
+                    answer.SelectedOption,
+                    correctOption,
+                    StringComparison.OrdinalIgnoreCase
+                );
+            }
+        }
+
+        submission.Score =
+            submission.Answers.Count(a => a.IsCorrect);
+
+        submission.TotalQuestions = 10;
+    }
+
+    // SAVE CHANGES
+
     await db.SaveChangesAsync();
+
     await transaction.CommitAsync();
 
     return Results.Ok(new
     {
-        message = "Quiz updated successfully.",
+        message = "Quiz updated successfully. Existing student scores have been recalculated.",
         title = quiz.Title,
         accessCode = quiz.AccessCode,
-        totalQuestions = quiz.Questions.Count
+        totalQuestions = quiz.Questions.Count,
+        studentsUpdated = submissions.Count,
+        scoresRecalculated = true
     });
 });
 
@@ -571,7 +599,7 @@ app.MapPost("/api/student/join", async (
         quizTitle = quiz.Title,
         totalQuestions = quiz.Questions.Count,
 
-        // Never send correct answers before students answer.
+        // DO NOT SEND CORRECT ANSWERS BEFORE STUDENTS ANSWER
 
         questions = quiz.Questions
             .OrderBy(q => q.QuestionNumber)
@@ -711,7 +739,9 @@ app.MapPost("/api/student/finish/{submissionId:guid}",
         });
     }
 
-    submission.Score = submission.Answers.Count(a => a.IsCorrect);
+    submission.Score =
+        submission.Answers.Count(a => a.IsCorrect);
+
     submission.TotalQuestions = totalQuestions;
 
     await db.SaveChangesAsync();
