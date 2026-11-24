@@ -1,4 +1,3 @@
-
 using Microsoft.EntityFrameworkCore;
 using ShapeQuiz.Api.Data;
 using ShapeQuiz.Api.DTOs;
@@ -7,10 +6,7 @@ using System.Security.Cryptography;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ==========================================
 // REGISTER SERVICES
-// ==========================================
-
 builder.Services.AddOpenApi();
 
 builder.Services.AddDbContext<ShapeQuizDbContext>(options =>
@@ -19,10 +15,7 @@ builder.Services.AddDbContext<ShapeQuizDbContext>(options =>
     )
 );
 
-// ==========================================
-// CORS CONFIGURATION
-// ==========================================
-
+// CORS
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("ShapeQuizFrontend", policy =>
@@ -39,10 +32,7 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-// ==========================================
 // MIDDLEWARE
-// ==========================================
-
 app.UseCors("ShapeQuizFrontend");
 
 if (app.Environment.IsDevelopment())
@@ -52,10 +42,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// ==========================================
-// API HEALTH CHECK
-// ==========================================
-
+// HEALTH CHECK
 app.MapGet("/api/health", () =>
 {
     return Results.Ok(new
@@ -64,10 +51,7 @@ app.MapGet("/api/health", () =>
     });
 });
 
-// ==========================================
 // DATABASE HEALTH CHECK
-// ==========================================
-
 app.MapGet("/api/health/database", async (ShapeQuizDbContext db) =>
 {
     try
@@ -132,8 +116,6 @@ app.MapPost("/api/quizzes", async (
         });
     }
 
-    // VALIDATE QUESTIONS
-
     for (int i = 0; i < request.Questions.Count; i++)
     {
         var question = request.Questions[i];
@@ -196,7 +178,6 @@ app.MapPost("/api/quizzes", async (
     }
 
     // GENERATE UNIQUE ACCESS CODE
-
     const string characters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
     string accessCode;
@@ -214,7 +195,6 @@ app.MapPost("/api/quizzes", async (
     while (await db.Quizzes.AnyAsync(q => q.AccessCode == accessCode));
 
     // CREATE QUIZ
-
     var quiz = new Quiz
     {
         Title = title,
@@ -242,7 +222,6 @@ app.MapPost("/api/quizzes", async (
     }
 
     db.Quizzes.Add(quiz);
-
     await db.SaveChangesAsync();
 
     return Results.Created(
@@ -262,7 +241,7 @@ app.MapPost("/api/quizzes", async (
 
 // ==========================================
 // GET QUIZ FOR EDITING
-// ALLOW STUDENTS WHO HAVE ALREADY JOINED
+// ALLOWS EDITING AFTER STUDENTS JOIN
 // ==========================================
 
 app.MapGet("/api/quizzes/{accessCode}/edit", async (
@@ -307,8 +286,8 @@ app.MapGet("/api/quizzes/{accessCode}/edit", async (
 
 // ==========================================
 // UPDATE EXISTING QUIZ
-// ALLOW EDITING AFTER STUDENTS JOIN
-// RECALCULATE EXISTING STUDENT SCORES
+// ALLOWS EDITING AFTER STUDENTS JOIN
+// RECALCULATES EXISTING STUDENT SCORES
 // ==========================================
 
 app.MapPut("/api/quizzes/{accessCode}", async (
@@ -316,8 +295,6 @@ app.MapPut("/api/quizzes/{accessCode}", async (
     CreateQuizRequest? request,
     ShapeQuizDbContext db) =>
 {
-    // VALIDATE REQUEST
-
     if (request == null ||
         request.Questions == null ||
         request.Questions.Count != 10)
@@ -339,8 +316,7 @@ app.MapPut("/api/quizzes/{accessCode}", async (
         });
     }
 
-    // VALIDATE ALL QUESTIONS BEFORE UPDATING
-
+    // VALIDATE ALL QUESTIONS
     for (int i = 0; i < request.Questions.Count; i++)
     {
         var item = request.Questions[i];
@@ -403,7 +379,6 @@ app.MapPut("/api/quizzes/{accessCode}", async (
     }
 
     // START DATABASE TRANSACTION
-
     await using var transaction =
         await db.Database.BeginTransactionAsync();
 
@@ -428,7 +403,6 @@ app.MapPut("/api/quizzes/{accessCode}", async (
     }
 
     // UPDATE EXISTING QUIZ
-
     quiz.Title = title;
 
     var existingQuestions = quiz.Questions
@@ -450,10 +424,7 @@ app.MapPut("/api/quizzes/{accessCode}", async (
             item.CorrectOption.Trim().ToUpperInvariant();
     }
 
-    // ======================================
     // RECALCULATE EXISTING STUDENT ANSWERS
-    // ======================================
-
     var submissions = await db.Submissions
         .Where(s => s.QuizId == quiz.Id)
         .Include(s => s.Answers)
@@ -488,9 +459,7 @@ app.MapPut("/api/quizzes/{accessCode}", async (
     }
 
     // SAVE CHANGES
-
     await db.SaveChangesAsync();
-
     await transaction.CommitAsync();
 
     return Results.Ok(new
@@ -586,7 +555,6 @@ app.MapPost("/api/student/join", async (
     };
 
     db.Submissions.Add(submission);
-
     await db.SaveChangesAsync();
 
     return Results.Ok(new
@@ -600,7 +568,6 @@ app.MapPost("/api/student/join", async (
         totalQuestions = quiz.Questions.Count,
 
         // DO NOT SEND CORRECT ANSWERS BEFORE STUDENTS ANSWER
-
         questions = quiz.Questions
             .OrderBy(q => q.QuestionNumber)
             .Select(q => new
@@ -692,7 +659,6 @@ app.MapPost("/api/student/answer", async (
     };
 
     db.Answers.Add(answer);
-
     await db.SaveChangesAsync();
 
     return Results.Ok(new
@@ -801,8 +767,5 @@ app.MapGet("/api/student/leaderboard/{accessCode}",
     });
 });
 
-// ==========================================
 // RUN APPLICATION
-// ==========================================
-
 app.Run();
