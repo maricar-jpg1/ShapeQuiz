@@ -1,3 +1,4 @@
+
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -8,7 +9,8 @@ import {
   LoaderCircle
 } from "lucide-react";
 
-const API_URL = "http://localhost:5286/api";
+// Deployed ShapeQuiz backend
+const API_URL = "https://shapequiz-api.onrender.com/api";
 
 function StudentLogin() {
   const navigate = useNavigate();
@@ -20,10 +22,12 @@ function StudentLogin() {
 
   const handleJoin = async (e) => {
     e.preventDefault();
-
     setError("");
 
-    if (!name.trim() || !code.trim()) {
+    const studentName = name.trim();
+    const accessCode = code.trim().toUpperCase();
+
+    if (!studentName || !accessCode) {
       setError("Please enter your name and quiz code.");
       return;
     }
@@ -37,31 +41,46 @@ function StudentLogin() {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          fullName: name.trim(),
-          accessCode: code.trim().toUpperCase()
+          fullName: studentName,
+          accessCode: accessCode
         })
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
         throw new Error(
-          data.message || "Unable to join the quiz. Please check your details."
+          data.message ||
+          data.detail ||
+          "Unable to join the quiz. Please check your name and access code."
         );
       }
 
-      // Save the backend response for the quiz page.
-      sessionStorage.setItem("studentName", data.studentName);
-      sessionStorage.setItem("quizCode", code.trim().toUpperCase());
+      if (!data.submissionId || !data.questions) {
+        throw new Error(
+          "The server returned an incomplete quiz response. Please contact your teacher."
+        );
+      }
+
+      // Save the successful backend response for StudentQuiz.jsx.
+      sessionStorage.setItem("studentName", data.studentName || studentName);
+      sessionStorage.setItem("quizCode", accessCode);
       sessionStorage.setItem("submissionId", data.submissionId);
       sessionStorage.setItem("studentQuiz", JSON.stringify(data));
 
+      // Open the student quiz page.
       navigate("/student/quiz");
+
     } catch (err) {
-      setError(
-        err.message ||
-        "Cannot connect to the server. Please make sure the backend is running."
-      );
+      console.error("Student join error:", err);
+
+      if (err instanceof TypeError) {
+        setError(
+          "Cannot connect to ShapeQuiz server. Please check the server connection."
+        );
+      } else {
+        setError(err.message || "Something went wrong. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -101,6 +120,7 @@ function StudentLogin() {
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={loading}
+              maxLength={100}
               required
             />
           </div>
@@ -118,12 +138,13 @@ function StudentLogin() {
                 setCode(e.target.value.toUpperCase())
               }
               disabled={loading}
+              maxLength={6}
               required
             />
           </div>
 
           {error && (
-            <p className="error-message">
+            <p className="error-message" role="alert">
               {error}
             </p>
           )}
