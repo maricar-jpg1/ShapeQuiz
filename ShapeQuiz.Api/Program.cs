@@ -19,11 +19,32 @@ builder.Services.AddDbContext<ShapeQuizDbContext>(options =>
     )
 );
 
+// ==========================================
+// CORS CONFIGURATION
+// ==========================================
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("ShapeQuizFrontend", policy =>
+    {
+        policy
+            .WithOrigins(
+                "https://shapequiz-frontend.onrender.com",
+                "http://localhost:5173"
+            )
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+    });
+});
+
 var app = builder.Build();
 
 // ==========================================
-// OPENAPI
+// MIDDLEWARE
 // ==========================================
+
+// IMPORTANT: CORS must run before API endpoints.
+app.UseCors("ShapeQuizFrontend");
 
 if (app.Environment.IsDevelopment())
 {
