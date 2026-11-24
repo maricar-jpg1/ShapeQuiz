@@ -43,7 +43,6 @@ var app = builder.Build();
 // MIDDLEWARE
 // ==========================================
 
-// IMPORTANT: CORS must run before API endpoints.
 app.UseCors("ShapeQuizFrontend");
 
 if (app.Environment.IsDevelopment())
@@ -75,15 +74,9 @@ app.MapGet("/api/health/database", async (ShapeQuizDbContext db) =>
     {
         bool connected = await db.Database.CanConnectAsync();
 
-        if (connected)
-        {
-            return Results.Ok(new
-            {
-                status = "Database connected successfully"
-            });
-        }
-
-        return Results.Problem("Could not connect to the database.");
+        return connected
+            ? Results.Ok(new { status = "Database connected successfully" })
+            : Results.Problem("Could not connect to the database.");
     }
     catch
     {
@@ -101,7 +94,7 @@ app.MapPost("/api/quizzes", async (
     CreateQuizRequest? request,
     ShapeQuizDbContext db) =>
 {
-    if (request is null)
+    if (request == null)
     {
         return Results.BadRequest(new
         {
@@ -120,17 +113,15 @@ app.MapPost("/api/quizzes", async (
         });
     }
 
-    if (string.IsNullOrWhiteSpace(createdBy) ||
-        createdBy.Length > 100)
+    if (string.IsNullOrWhiteSpace(createdBy) || createdBy.Length > 100)
     {
         return Results.BadRequest(new
         {
-            message = "Enter a teacher name between 1 and 100 characters."
+            message = "Enter a valid teacher name."
         });
     }
 
-    if (request.Questions == null ||
-        request.Questions.Count != 10)
+    if (request.Questions == null || request.Questions.Count != 10)
     {
         return Results.BadRequest(new
         {
@@ -138,7 +129,7 @@ app.MapPost("/api/quizzes", async (
         });
     }
 
-    // Validate all questions and choices.
+    // Validate all questions.
 
     for (int i = 0; i < request.Questions.Count; i++)
     {
@@ -201,7 +192,7 @@ app.MapPost("/api/quizzes", async (
         }
     }
 
-    // Generate a unique six-character access code.
+    // Generate unique access code.
 
     const string characters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -217,8 +208,7 @@ app.MapPost("/api/quizzes", async (
                 .ToArray()
         );
     }
-    while (await db.Quizzes.AnyAsync(
-        q => q.AccessCode == accessCode));
+    while (await db.Quizzes.AnyAsync(q => q.AccessCode == accessCode));
 
     // Create quiz.
 
@@ -244,9 +234,7 @@ app.MapPost("/api/quizzes", async (
             OptionB = item.OptionB.Trim(),
             OptionC = item.OptionC.Trim(),
             OptionD = item.OptionD.Trim(),
-            CorrectOption = item.CorrectOption
-                .Trim()
-                .ToUpperInvariant()
+            CorrectOption = item.CorrectOption.Trim().ToUpperInvariant()
         });
     }
 
@@ -267,6 +255,225 @@ app.MapPost("/api/quizzes", async (
             isPublished = quiz.IsPublished
         }
     );
+});
+
+// ==========================================
+// GET QUIZ FOR EDITING
+// ==========================================
+
+app.MapGet("/api/quizzes/{accessCode}/edit", async (
+    string accessCode,
+    ShapeQuizDbContext db) =>
+{
+    string code = accessCode.Trim().ToUpperInvariant();
+
+    var quiz = await db.Quizzes
+        .Include(q => q.Questions)
+        .FirstOrDefaultAsync(q => q.AccessCode == code);
+
+    if (quiz == null)
+    {
+        return Results.NotFound(new
+        {
+            message = "Quiz not found."
+        });
+    }
+
+    bool hasStudents = await db.Submissions
+        .AnyAsync(s => s.QuizId == quiz.Id);
+
+    if (hasStudents)
+    {
+        return Results.BadRequest(new
+        {
+            message = "This quiz cannot be edited because students have already joined."
+        });
+    }
+
+    return Results.Ok(new
+    {
+        quiz.Title,
+        quiz.AccessCode,
+        quiz.CreatedBy,
+
+        questions = quiz.Questions
+            .OrderBy(q => q.QuestionNumber)
+            .Select(q => new
+            {
+                q.Id,
+                q.QuestionNumber,
+                q.QuestionText,
+                q.OptionA,
+                q.OptionB,
+                q.OptionC,
+                q.OptionD,
+                q.CorrectOption
+            })
+    });
+});
+
+// ==========================================
+// UPDATE EXISTING QUIZ
+// ==========================================
+
+app.MapPut("/api/quizzes/{accessCode}", async (
+    string accessCode,
+    CreateQuizRequest? request,
+    ShapeQuizDbContext db) =>
+{
+    if (request == null || request.Questions == null ||
+        request.Questions.Count != 10)
+    {
+        return Results.BadRequest(new
+        {
+            message = "The quiz must contain exactly 10 questions."
+        });
+    }
+
+    string code = accessCode.Trim().ToUpperInvariant();
+    string title = request.Title?.Trim() ?? "";
+
+    if (string.IsNullOrWhiteSpace(title) || title.Length > 100)
+    {
+        return Results.BadRequest(new
+        {
+            message = "Enter a valid quiz title."
+        });
+    }
+
+    // Validate before updating.
+
+    for (int i = 0; i < request.Questions.Count; i++)
+    {
+        var item = request.Questions[i];
+
+        if (item == null)
+        {
+            return Results.BadRequest(new
+            {
+                message = $"Question {i + 1} is required."
+            });
+        }
+
+        string questionText = item.QuestionText?.Trim() ?? "";
+
+        var options = new[]
+        {
+            item.OptionA?.Trim() ?? "",
+            item.OptionB?.Trim() ?? "",
+            item.OptionC?.Trim() ?? "",
+            item.OptionD?.Trim() ?? ""
+        };
+
+        string correct = item.CorrectOption?
+            .Trim().ToUpperInvariant() ?? "";
+
+        if (string.IsNullOrWhiteSpace(questionText) ||
+            questionText.Length > 500)
+        {
+            return Results.BadRequest(new
+            {
+                message = $"Question {i + 1} has invalid text."
+            });
+        }
+
+        if (options.Any(string.IsNullOrWhiteSpace) ||
+            options.Any(x => x.Length > 200))
+        {
+            return Results.BadRequest(new
+            {
+                message = $"Question {i + 1} must have four valid choices."
+            });
+        }
+
+        if (options.Distinct(
+            StringComparer.OrdinalIgnoreCase).Count() != 4)
+        {
+            return Results.BadRequest(new
+            {
+                message = $"Question {i + 1} must have four different choices."
+            });
+        }
+
+        if (!new[] { "A", "B", "C", "D" }.Contains(correct))
+        {
+            return Results.BadRequest(new
+            {
+                message = $"Question {i + 1} has an invalid correct answer."
+            });
+        }
+    }
+
+    // Start transaction.
+
+    await using var transaction =
+        await db.Database.BeginTransactionAsync();
+
+    var quiz = await db.Quizzes
+        .Include(q => q.Questions)
+        .FirstOrDefaultAsync(q => q.AccessCode == code);
+
+    if (quiz == null)
+    {
+        return Results.NotFound(new
+        {
+            message = "Quiz not found."
+        });
+    }
+
+    // Do not allow edits after students join.
+
+    bool hasStudents = await db.Submissions
+        .AnyAsync(s => s.QuizId == quiz.Id);
+
+    if (hasStudents)
+    {
+        return Results.BadRequest(new
+        {
+            message = "Editing is disabled because students have already joined this quiz."
+        });
+    }
+
+    if (quiz.Questions.Count != 10)
+    {
+        return Results.BadRequest(new
+        {
+            message = "The existing quiz does not contain exactly 10 questions."
+        });
+    }
+
+    // Update existing records.
+
+    quiz.Title = title;
+
+    var existingQuestions = quiz.Questions
+        .OrderBy(q => q.QuestionNumber)
+        .ToList();
+
+    for (int i = 0; i < 10; i++)
+    {
+        var item = request.Questions[i];
+        var existing = existingQuestions[i];
+
+        existing.QuestionText = item.QuestionText.Trim();
+        existing.OptionA = item.OptionA.Trim();
+        existing.OptionB = item.OptionB.Trim();
+        existing.OptionC = item.OptionC.Trim();
+        existing.OptionD = item.OptionD.Trim();
+        existing.CorrectOption =
+            item.CorrectOption.Trim().ToUpperInvariant();
+    }
+
+    await db.SaveChangesAsync();
+    await transaction.CommitAsync();
+
+    return Results.Ok(new
+    {
+        message = "Quiz updated successfully.",
+        title = quiz.Title,
+        accessCode = quiz.AccessCode,
+        totalQuestions = quiz.Questions.Count
+    });
 });
 
 // ==========================================
@@ -364,7 +571,7 @@ app.MapPost("/api/student/join", async (
         quizTitle = quiz.Title,
         totalQuestions = quiz.Questions.Count,
 
-        // CorrectOption is intentionally not included.
+        // Never send correct answers before students answer.
 
         questions = quiz.Questions
             .OrderBy(q => q.QuestionNumber)
@@ -400,8 +607,7 @@ app.MapPost("/api/student/answer", async (
     }
 
     string selected = request.SelectedOption?
-        .Trim()
-        .ToUpperInvariant() ?? "";
+        .Trim().ToUpperInvariant() ?? "";
 
     if (!new[] { "A", "B", "C", "D" }.Contains(selected))
     {
@@ -466,7 +672,7 @@ app.MapPost("/api/student/answer", async (
         message = "Answer saved successfully.",
         questionId = question.Id,
         selectedOption = selected,
-        isCorrect = isCorrect,
+        isCorrect,
         correctOption = question.CorrectOption
     });
 });
